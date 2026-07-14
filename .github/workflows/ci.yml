@@ -1,0 +1,16 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - name: conformance vs Qallow C decoder
+        run: |
+          git clone --depth 1 https://github.com/xingxerx/Qallow.git /tmp/Qallow
+          cargo build -p conformance-emitter
+          ./target/debug/emit /tmp/stream.bin
+          gcc -I/tmp/Qallow/include -o conformance/verify conformance/verify.c /tmp/Qallow/src/mind/sync_wire.c
+          ./conformance/verify /tmp/stream.bin

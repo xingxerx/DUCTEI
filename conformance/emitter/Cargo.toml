@@ -1,0 +1,10 @@
+[package]
+name = "conformance-emitter"
+version = "0.2.0"
+edition = "2021"
+[dependencies]
+ductei-core = { path = "../../ductei-core" }
+ductei-qallow = { path = "../../ductei-qallow" }
+[[bin]]
+name = "emit"
+path = "src/main.rs"
