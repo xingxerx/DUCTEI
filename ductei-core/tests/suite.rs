@@ -210,6 +210,30 @@ fn veyn_rem_and_hrv_get_narrow_scopes() {
 
     let e = ductei_veyn::event_to_envelope(&veyn_json("osc.eeg", "rem.detected", 1)).unwrap();
     assert_eq!(e.scopes[0].0, "veyn.rem_event");
+
+    // The real VEYN EEG adapter reports source "eeg", not "osc.eeg".
+    assert_eq!(ductei_veyn::scope_for("eeg", "delta_absolute"), ductei_veyn::EEG_SCOPE);
+}
+
+#[test]
+fn veyn_distinct_devices_same_metric_dont_collide_in_gate() {
+    // Two BLE heart-rate straps report the same (source, kind). Device A's
+    // lamport (its own event ts) racing ahead of device B's must not
+    // stale-reject B's legitimate, independent stream -- each device is
+    // its own causal-gate key.
+    let mut g = CausalGate::new();
+    let a1 = ductei_veyn::event_to_envelope(&veyn_json_node(
+        "ble", "heart_rate", 1_000, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ))
+    .unwrap();
+    let b1 = ductei_veyn::event_to_envelope(&veyn_json_node(
+        "ble", "heart_rate", 100, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ))
+    .unwrap();
+    assert_eq!(g.admit(&a1), Verdict::Accept);
+    // Device B's much smaller lamport must still be accepted: it's a
+    // different device, not a stale resend of device A's stream.
+    assert_eq!(g.admit(&b1), Verdict::Accept);
 }
 
 #[test]
