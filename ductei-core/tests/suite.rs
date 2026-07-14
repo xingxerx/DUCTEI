@@ -192,8 +192,12 @@ fn qsw_v2_survives_comma_in_scope_name() {
 // ---- Phase 3: VEYN adapter (narrow scopes, coalescing policy) ----
 
 fn veyn_json(source: &str, kind: &str, lamport: u64) -> String {
+    veyn_json_node(source, kind, lamport, "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a")
+}
+
+fn veyn_json_node(source: &str, kind: &str, lamport: u64, node_hex: &str) -> String {
     format!(
-        r#"{{"source":"{source}","kind":"{kind}","node_hex":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","lamport":{lamport},"payload":{{}}}}"#
+        r#"{{"source":"{source}","kind":"{kind}","node_hex":"{node_hex}","lamport":{lamport},"payload":{{}}}}"#
     )
 }
 

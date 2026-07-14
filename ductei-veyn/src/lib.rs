@@ -47,12 +47,23 @@ pub fn scope_for(source: &str, kind: &str) -> &'static str {
         return HRV_SCOPE;
     }
     match source {
-        "osc.eeg" => EEG_SCOPE,
+        // "eeg" is the real VEYN adapter name (see veyn-adapters/src/eeg.rs);
+        // "osc.eeg" is kept for callers that still use the earlier naming.
+        "osc.eeg" | "eeg" => EEG_SCOPE,
         "healthkit" => HEALTH_SCOPE,
         "watch" => WATCH_SCOPE,
         "ble" => BLE_SCOPE,
         _ => MISC_SCOPE,
     }
+}
+
+/// Envelope key: scope-set alone isn't enough to disambiguate streams --
+/// two distinct devices reporting the same (source, kind) (e.g. two BLE
+/// heart-rate straps) must not share one causal-gate stream, or one
+/// device's clock catching up would spuriously stale-reject the other's
+/// legitimate samples. `node_hex` makes the key per-device.
+fn envelope_key(source: &str, kind: &str, node_hex: &str) -> String {
+    format!("veyn.{source}.{kind}.{node_hex}")
 }
 
 fn node_from_hex(hex: &str) -> [u8; 16] {
@@ -70,7 +81,7 @@ pub fn event_to_envelope(json: &str) -> Result<Envelope, String> {
     let e: VeynEvent = serde_json::from_str(json).map_err(|x| x.to_string())?;
     let blob = serde_json::to_vec(&e.payload).map_err(|x| x.to_string())?;
     Ok(scoped(
-        &format!("veyn.{}.{}", e.source, e.kind),
+        &envelope_key(&e.source, &e.kind, &e.node_hex),
         &[scope_for(&e.source, &e.kind)],
         node_from_hex(&e.node_hex),
         e.lamport,
@@ -130,7 +141,7 @@ impl Adapter {
         self.last_emit_ms.insert(stream_key, now_ms);
         let blob = serde_json::to_vec(&e.payload).map_err(|x| x.to_string())?;
         Ok(Some(scoped(
-            &format!("veyn.{}.{}", e.source, e.kind),
+            &envelope_key(&e.source, &e.kind, &e.node_hex),
             &[scope],
             node,
             e.lamport,
