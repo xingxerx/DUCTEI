@@ -1,0 +1,19 @@
+syntax = "proto3";
+package ductei.channel.v1;
+
+// Envelope crosses the wire as its existing JSON encoding (unchanged wire
+// format vs. the TCP transport); gRPC only supplies framing, multiplexing,
+// and transport security here. No envelope field is reinterpreted.
+message EnvelopeMsg {
+  bytes json_envelope = 1;
+}
+
+message Ack {
+  bool accepted = 1;
+}
+
+// Persistence-first ack: accepted=true iff the remote has run the
+// envelope through scope policy -> causal gate -> fsynced JSONL log.
+service ChannelService {
+  rpc SendEnvelope(EnvelopeMsg) returns (Ack);
+}

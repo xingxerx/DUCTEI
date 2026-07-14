@@ -5,6 +5,9 @@
 //! makes them a native wire field.
 use ductei_core::{Envelope, Scope};
 
+pub mod ingest;
+pub mod v2;
+
 pub const QSW_MAGIC: u32 = 0x4E595351;
 pub const QSW_PROTO_VER: u16 = 1;
 pub const F_HELLO: u8 = 1;

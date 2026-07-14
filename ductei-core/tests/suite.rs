@@ -159,4 +159,148 @@ fn veyn_event_flows_gate_transport_qallow() {
     assert_eq!(wire[0], ductei_qallow::F_ENVELOPE);
     let back = ductei_qallow::decode_envelope_body(&wire[5..]).unwrap();
     assert_eq!(back, envs[0]);
+
+    // Qallow-side ingestion seam: the real ql_persist_merge_blob() lives in
+    // the Qallow repo and doesn't exist yet, but the call site does, and a
+    // local stand-in proves "envelope decoded -> merge called" end-to-end.
+    let mut sink = ductei_qallow::ingest::MemorySink::default();
+    ductei_qallow::ingest::ingest_envelope(&mut sink, &back).unwrap();
+    assert_eq!(sink.merged, vec![(back.key.clone(), back.blob.clone())]);
+}
+
+// ---- QSW proto v2: scopes as native wire field ----
+
+#[test]
+fn qsw_v2_roundtrip_multi_scope() {
+    let e = env("k", &["qallow.semantic.cert", "veyn.sensor.eeg"], 9, 7);
+    let wire = ductei_qallow::v2::encode_envelope(&e);
+    assert_eq!(wire[0], ductei_qallow::F_ENVELOPE);
+    let back = ductei_qallow::v2::decode_envelope_body(&wire[5..]).unwrap();
+    assert_eq!(back, e);
+}
+
+#[test]
+fn qsw_v2_survives_comma_in_scope_name() {
+    // v1's key-prefix shim joins scopes with ',' and would corrupt a scope
+    // name containing a comma; v2's length-prefixed native field does not.
+    let e = env("k", &["weird,scope"], 1, 1);
+    let wire = ductei_qallow::v2::encode_envelope(&e);
+    let back = ductei_qallow::v2::decode_envelope_body(&wire[5..]).unwrap();
+    assert_eq!(back.scopes[0].0, "weird,scope");
+}
+
+// ---- Phase 3: VEYN adapter (narrow scopes, coalescing policy) ----
+
+fn veyn_json(source: &str, kind: &str, lamport: u64) -> String {
+    format!(
+        r#"{{"source":"{source}","kind":"{kind}","node_hex":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","lamport":{lamport},"payload":{{}}}}"#
+    )
+}
+
+#[test]
+fn veyn_rem_and_hrv_get_narrow_scopes() {
+    assert_eq!(ductei_veyn::scope_for("osc.eeg", "rem.detected"), ductei_veyn::REM_EVENT_SCOPE);
+    assert_eq!(ductei_veyn::scope_for("watch", "hrv"), ductei_veyn::HRV_SCOPE);
+    // Unrelated kinds still fall back to the broader per-source scope.
+    assert_eq!(ductei_veyn::scope_for("osc.eeg", "eeg.sample"), ductei_veyn::EEG_SCOPE);
+
+    let e = ductei_veyn::event_to_envelope(&veyn_json("osc.eeg", "rem.detected", 1)).unwrap();
+    assert_eq!(e.scopes[0].0, "veyn.rem_event");
+}
+
+#[test]
+fn veyn_hrv_coalesced_to_one_per_minute() {
+    let mut a = ductei_veyn::Adapter::new(ductei_veyn::CoalescePolicy::default_policy());
+    let mut accepted = 0;
+    // Simulate VEYN seeing HRV at 1 Hz for ~125 seconds.
+    for i in 0..125u64 {
+        let json = veyn_json("watch", "hrv", i);
+        if a.ingest(&json, i * 1000).unwrap().is_some() {
+            accepted += 1;
+        }
+    }
+    // Admitted at t=0, 60_000, 120_000ms: raw firehose stays in VEYN,
+    // DUCTEI only sees the throttled 1/min stream.
+    assert_eq!(accepted, 3);
+}
+
+// ---- gRPC / QUIC transport, ML-KEM key exchange (feature-gated) ----
+
+#[cfg(feature = "grpc")]
+#[test]
+fn grpc_two_node_loopback() {
+    use ductei_core::grpc::{serve_grpc_blocking, GrpcClient};
+    use ductei_core::transport::Transport;
+
+    let p = tmp("g0.jsonl");
+    let r = tmp("g0r.jsonl");
+    let _ = std::fs::remove_file(&p);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener); // release the port; grpc server binds it itself
+
+    let server = std::thread::spawn(move || {
+        let ch = Channel::open(ScopePolicy::new().allow("qallow.semantic.cert"), &p, &r).unwrap();
+        serve_grpc_blocking(addr, ch)
+    });
+    // Give the server a moment to bind before the client connects.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let mut c = GrpcClient::connect(&addr.to_string()).unwrap();
+    assert!(c.send_envelope(&env("a", &["qallow.semantic.cert"], 1, 1)).unwrap());
+    assert!(!c.send_envelope(&env("b", &["limen.credentials"], 1, 2)).unwrap());
+    drop(c);
+    drop(server); // detach; serve_grpc_blocking runs until the process exits
+}
+
+#[cfg(feature = "quic")]
+#[test]
+fn quic_two_node_loopback() {
+    use ductei_core::quic::{generate_self_signed, serve_quic_blocking, QuicClient};
+    use ductei_core::transport::Transport;
+
+    let p = tmp("q0.jsonl");
+    let r = tmp("q0r.jsonl");
+    let _ = std::fs::remove_file(&p);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let signed = generate_self_signed("localhost").unwrap();
+    let cert_der = signed.cert_der.clone();
+    let server = std::thread::spawn(move || {
+        let ch = Channel::open(ScopePolicy::new().allow("qallow.semantic.cert"), &p, &r).unwrap();
+        serve_quic_blocking(addr, signed, ch)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let mut c = QuicClient::connect(addr, "localhost", &cert_der).unwrap();
+    assert!(c.send_envelope(&env("a", &["qallow.semantic.cert"], 1, 1)).unwrap());
+    assert!(!c.send_envelope(&env("b", &["limen.credentials"], 1, 2)).unwrap());
+    drop(c);
+    drop(server);
+}
+
+#[cfg(feature = "pq")]
+#[test]
+fn mlkem_shared_secret_agreement() {
+    let pair = ductei_core::pq::generate_keypair();
+    let (ciphertext, sender_secret) = ductei_core::pq::encapsulate_to(&pair.public_key).unwrap();
+    let receiver_secret = ductei_core::pq::decapsulate_from(&pair, &ciphertext).unwrap();
+    assert_eq!(sender_secret, receiver_secret);
+}
+
+#[test]
+fn veyn_rem_events_pass_uncoalesced() {
+    let mut a = ductei_veyn::Adapter::new(ductei_veyn::CoalescePolicy::default_policy());
+    let mut accepted = 0;
+    // REM triggers are discrete events, not a sampled stream -- even at
+    // high simulated frequency, none should be dropped.
+    for i in 0..50u64 {
+        let json = veyn_json("osc.eeg", "rem.detected", i);
+        if a.ingest(&json, i * 10).unwrap().is_some() {
+            accepted += 1;
+        }
+    }
+    assert_eq!(accepted, 50);
 }

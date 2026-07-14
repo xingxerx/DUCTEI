@@ -12,6 +12,12 @@ use std::path::{Path, PathBuf};
 
 pub mod gate;
 pub mod transport;
+#[cfg(feature = "grpc")]
+pub mod grpc;
+#[cfg(feature = "quic")]
+pub mod quic;
+#[cfg(feature = "pq")]
+pub mod pq;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Scope(pub String);

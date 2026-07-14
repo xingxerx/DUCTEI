@@ -27,23 +27,54 @@ Channel, not merger. Per-repo adapters over shared structs.
 ## Crates
 | crate | role |
 |---|---|
-| `ductei-core` | Scope, ScopePolicy, Envelope, LogStore, Channel, SessionBound, `gate` (causal-delta), `transport` (TCP) |
+| `ductei-core` | Scope, ScopePolicy, Envelope, LogStore, Channel, SessionBound, `gate` (causal-delta), `transport` (TCP), `grpc` (feature), `quic` (feature), `pq` (feature: ML-KEM-768) |
 | `ductei-limen` | LIMEN cert JSON -> `qallow.semantic.cert` envelopes (closed type) |
-| `ductei-qallow` | Envelope <-> Qallow QSW proto v1 bytes (pure Rust, byte-compatible) |
-| `ductei-veyn` | VEYN sensor events -> scoped envelopes (`veyn.sensor.*`, deny-by-default) |
+| `ductei-qallow` | Envelope <-> Qallow QSW proto v1/v2 bytes (pure Rust, byte-compatible); `ingest` (Qallow-side merge seam) |
+| `ductei-veyn` | VEYN sensor/actuator events -> scoped envelopes. Narrow deny-by-default scopes (`veyn.rem_event`, `veyn.hrv`, `veyn.sensor.*`, `veyn.actuator.watch`); `Adapter` applies a per-scope `CoalescePolicy` (HRV sampled to 1/min) before conversion so raw firehose stays inside VEYN |
 | `conformance/` | Rust emitter + C verifier linking Qallow's real `sync_wire.c` |
 
-## Transport (Build 1)
+## Transport
 TCP, length-prefixed frames (u32 LE len | JSON envelope), matching the
-incremental-decoder pattern. Vendor-neutral `Transport` trait so
-gRPC/QUIC can slot in later. Inbound path per frame:
+incremental-decoder pattern, on by default. Vendor-neutral `Transport`
+trait so other transports can slot in behind it. Inbound path per frame:
 scope policy -> causal gate -> fsynced JSONL append -> ack byte.
 Ack=1 means the remote has persisted; ack=0 means denied/stale
 (logged channel-side, never applied). QSW wire translation for
 Qallow ingestion lives in `ductei-qallow` unchanged.
 
+Two more `Transport` impls exist behind opt-in Cargo features, same
+persistence-first ack contract, same `Channel` on the receiving side:
+- **`grpc`** (`ductei_core::grpc`): `tonic`, envelope JSON rides unchanged
+  inside a one-RPC proto service (`ChannelService.SendEnvelope`); gRPC
+  supplies framing/multiplexing/TLS only.
+- **`quic`** (`ductei_core::quic`): `quinn` + `rustls`. QUIC requires TLS,
+  so there's no CA here — the server presents a self-signed cert
+  (`generate_self_signed`) that clients pin by DER bytes out-of-band.
+
+## Post-quantum key exchange (feature `pq`)
+`ductei_core::pq`: ML-KEM-768 (FIPS 203) via `pqcrypto-mlkem`, for
+establishing a session key ahead of the transport layer. This does not
+touch the `Envelope` wire format or scope model — it complements LIMEN's
+ML-DSA-65 signing with a matching post-quantum key-exchange primitive
+instead of only classical TLS.
+
+## QSW proto v2
+`ductei_qallow::v2`: scopes as a length-prefixed native wire field instead
+of v1's comma-joined key-prefix shim (which corrupts a scope name
+containing a comma). Lives alongside v1 unchanged — v1 stays byte-compatible
+with Qallow's real `sync_wire.c` and keeps passing the conformance oracle;
+v2 has no C-side counterpart yet.
+
+## Qallow-side ingestion seam
+`ductei_qallow::ingest`: a `QallowSink` trait shaped exactly like the real
+`ql_persist_merge_blob(key, blob)` call, plus `ingest_envelope()` as the one
+call site that will point at it. `ql_persist_merge_blob()` itself lives in
+the Qallow repo (C) and doesn't exist yet — this is the seam, not the fix.
+A `MemorySink` stand-in lets DUCTEI's own tests exercise "envelope decoded
+-> merge called" end-to-end without linking Qallow.
+
 ## Test status (2026-07-13)
-- `cargo test --workspace`: 11/11 pass
+- `cargo test --workspace`: 16/16 pass (default features: TCP transport only)
   - v0.1.1 suite: scope deny-by-default, poisoned envelope, restart
     survival, credential drop, unbounded-session unrepresentable,
     session bound enforced with exit always available
@@ -52,9 +83,21 @@ Qallow ingestion lives in `ductei-qallow` unchanged.
   - Build 1: two-node loopback (accept, stale nack, scope-denied nack,
     persistence-first ack)
   - Build 2: synthetic OSC/EEG event -> VEYN adapter -> gate ->
-    transport -> second node log -> QSW bytes roundtrip intact
+    transport -> second node log -> QSW bytes roundtrip intact, then
+    through the Qallow ingestion seam (`ingest_envelope` -> `MemorySink`)
+  - QSW proto v2: multi-scope roundtrip, comma-in-scope-name survival
+  - Phase 3: REM/HRV get narrow scopes (`veyn.rem_event`, `veyn.hrv`)
+    distinct from the broader per-source scopes; simulated 1 Hz HRV
+    stream coalesced to 1/min by `Adapter`; simulated high-frequency
+    REM triggers pass through uncoalesced (discrete events, not sampled)
+- `cargo test --workspace --all-features`: 19/19 pass, adding:
+  - gRPC two-node loopback (accept, scope-denied nack) over `tonic`
+  - QUIC two-node loopback (accept, scope-denied nack) over `quinn`,
+    self-signed cert pinned by DER bytes
+  - ML-KEM-768 encapsulate/decapsulate shared-secret agreement
 - Conformance oracle: PASS (Qallow's C `qsw_decode()` fed one byte at a
-  time accepts the Rust HELLO/HELLO_ACK/ENVELOPE/BATCH_END/BYE stream)
+  time accepts the Rust HELLO/HELLO_ACK/ENVELOPE/BATCH_END/BYE stream) —
+  unaffected by any of the above; v1 encode/decode functions untouched
 
 ## Run conformance
 ```
@@ -65,23 +108,22 @@ gcc -I<qallow>/include -o conformance/verify conformance/verify.c <qallow>/src/m
 ```
 
 ## Known gaps (v0.1.0)
-- **Qallow-side ingestion is a stub in practice.** The roadmap and the
-  VEYN test both stop at "lands in a second node's JSONL log." The
-  `ql_persist_merge_blob()` call that would make a synced envelope show
-  up in Qallow's real LMDB store lives in the Qallow repo and doesn't
-  exist yet. This is a functional gap, not cosmetic: VEYN -> DUCTEI ->
-  Qallow is proven at the wire level but not at the persistence level
-  on the receiving end.
-- QSW proto v2 (scopes as a native wire field instead of the current
-  key-prefix shim) — open.
-- gRPC/QUIC transport — the `Transport` trait is vendor-neutral by
-  design, but only TCP is implemented.
-- Outside DUCTEI but blocking the full loop: the LIMEN README patch is
-  unapplied, and ML-KEM (encryption/key-exchange) is unevaluated —
-  only ML-DSA-65 signing exists.
+- **The real Qallow LMDB merge is still outside this repo.**
+  `ductei_qallow::ingest` gives DUCTEI's side a `QallowSink` seam and
+  proves "envelope decoded -> merge called" against a local stand-in, but
+  the actual `ql_persist_merge_blob()` call lives in the Qallow repo (C)
+  and doesn't exist yet. VEYN -> DUCTEI -> Qallow is proven at the wire
+  level and at the ingestion-seam level, not yet against Qallow's real
+  store.
+- Outside DUCTEI, blocking the full loop: the LIMEN README patch is
+  unapplied, and ML-KEM has no evaluated LIMEN-side counterpart yet
+  (DUCTEI's own `pq` feature adds ML-KEM-768 for transport key exchange,
+  independent of that).
 
 ## Roadmap
-- QSW proto v2: scopes as native wire field (drop key-prefix shim)
-- gRPC/QUIC transport behind the same trait
-- Qallow-side ingestion daemon calling `ql_persist_merge_blob()` on
-  decoded envelopes (lives in Qallow repo, not here)
+- Real Qallow ingestion daemon: an impl of `QallowSink` backed by an FFI
+  or cxx bridge into Qallow's `ql_persist_merge_blob()` (lives in the
+  Qallow repo, not here)
+- QSW proto v2 adoption on the Qallow side once a C decoder exists for it
+- gRPC/QUIC used as the default transport for cross-network peers once a
+  peer-provisioning story (cert distribution, service discovery) exists
