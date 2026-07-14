@@ -1,4 +1,6 @@
-# DUCTEI v0.2.0 — channel layer for LIMEN / Qallow / VEYN
+# DUCTEI v0.1.0 — channel layer for LIMEN / Qallow / VEYN
+
+Licensed under Apache-2.0 (see `LICENSE`).
 
 Channel, not merger. Per-repo adapters over shared structs.
 
@@ -9,7 +11,7 @@ Channel, not merger. Per-repo adapters over shared structs.
 1. Channel-side persistence. Append-only fsynced JSONL log with
    `replay(cursor)`. Nothing is acked before it is in the log.
 2. Bounded sessions only (`SessionBound`); unbounded unrepresentable.
-3. Causal-delta gate (v0.2): pre-sync filter on (lamport, node_id) per
+3. Causal-delta gate: pre-sync filter on (lamport, node_id) per
    (key, scope-set). Stale/out-of-order deltas rejected, logged to a
    JSONL reject log, never applied or re-broadcast. Ties break
    deterministically by node_id. Gate state rebuilds from the accepted
@@ -61,6 +63,22 @@ cargo build -p conformance-emitter
 gcc -I<qallow>/include -o conformance/verify conformance/verify.c <qallow>/src/mind/sync_wire.c
 ./conformance/verify /tmp/stream.bin
 ```
+
+## Known gaps (v0.1.0)
+- **Qallow-side ingestion is a stub in practice.** The roadmap and the
+  VEYN test both stop at "lands in a second node's JSONL log." The
+  `ql_persist_merge_blob()` call that would make a synced envelope show
+  up in Qallow's real LMDB store lives in the Qallow repo and doesn't
+  exist yet. This is a functional gap, not cosmetic: VEYN -> DUCTEI ->
+  Qallow is proven at the wire level but not at the persistence level
+  on the receiving end.
+- QSW proto v2 (scopes as a native wire field instead of the current
+  key-prefix shim) — open.
+- gRPC/QUIC transport — the `Transport` trait is vendor-neutral by
+  design, but only TCP is implemented.
+- Outside DUCTEI but blocking the full loop: the LIMEN README patch is
+  unapplied, and ML-KEM (encryption/key-exchange) is unevaluated —
+  only ML-DSA-65 signing exists.
 
 ## Roadmap
 - QSW proto v2: scopes as native wire field (drop key-prefix shim)

@@ -1,5 +1,5 @@
 //! ductei-core: scopes, envelopes, channel, persistence, bounded sessions,
-//! causal-delta gate (v0.2), TCP transport (v0.2).
+//! causal-delta gate, TCP transport.
 //! Design rules: deny-by-default scopes as first-class envelope fields;
 //! channel-side append-only persistence (nothing acked before logged);
 //! bounded sessions only; credentials unrepresentable by construction.
