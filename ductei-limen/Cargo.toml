@@ -7,3 +7,7 @@ license = "Apache-2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ductei-core = { path = "../ductei-core" }
+
+[[bin]]
+name = "ductei-limen-relay"
+path = "src/bin/relay.rs"
