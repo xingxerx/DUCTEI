@@ -38,3 +38,33 @@ jobs:
         run: pip install /tmp/LIMEN
       - name: run smoke scenarios
         run: python scripts/smoke_e2e.py --limen /tmp/LIMEN
+
+  # Second real consumer pair: limend -> ductei-limen-relay ->
+  # ductei-qallow-relay -> real `qallow ingest` -> real LMDB. See
+  # ATRIUM harness-roadmap/02-spine-flow.md ("Qallow pair first").
+  e2e-smoke-qallow:
+    runs-on: ubuntu-latest
+    env:
+      LIMEN_REV: fd3f505d01be871d3b547221f384666b1d013326
+      QALLOW_REV: 0a546b307c21b81f93ee56f5013698357662eff9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: checkout LIMEN at pinned rev
+        run: |
+          git clone https://github.com/xingxerx/LIMEN.git /tmp/LIMEN
+          git -C /tmp/LIMEN checkout "$LIMEN_REV"
+      - name: install LIMEN (simulator path only, no QPU extras)
+        run: pip install /tmp/LIMEN
+      - name: checkout and build Qallow at pinned rev
+        run: |
+          git clone https://github.com/xingxerx/Qallow.git /tmp/Qallow
+          git -C /tmp/Qallow checkout "$QALLOW_REV"
+          cargo build --manifest-path /tmp/Qallow/Cargo.toml -p qallow_cli
+      - name: run smoke scenarios
+        run: |
+          python scripts/smoke_qallow.py --limen /tmp/LIMEN \
+            --qallow-cli /tmp/Qallow/target/debug/qallow
