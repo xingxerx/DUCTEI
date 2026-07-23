@@ -2,6 +2,11 @@
 
 Licensed under Apache-2.0 (see `LICENSE`).
 
+Governance: ownership map, hard invariants, and build order for this
+repo and its siblings (LIMEN, Qallow, VEYN) live in
+[ATRIUM](https://github.com/xingxerx/ATRIUM) — read `AGENTS.md` there
+first.
+
 Channel, not merger. Per-repo adapters over shared structs.
 
 ## Design rules
