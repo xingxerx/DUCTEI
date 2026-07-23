@@ -6,7 +6,7 @@
 //! nothing to leak by construction.
 //!
 //! Usage:
-//!   ductei-limen-relay <spool_dir> [--poll-interval-ms N]
+//!   ductei-limen-relay <spool_dir> [--poll-interval-ms N] [--once]
 //!
 //! Channel state (accepted/rejected logs) and this relay's persisted node
 //! id live in a `ductei/` directory that is a *sibling* of <spool_dir>,
@@ -135,16 +135,23 @@ fn process_one(
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: {} <spool_dir> [--poll-interval-ms N]", args[0]);
+        eprintln!(
+            "usage: {} <spool_dir> [--poll-interval-ms N] [--once]",
+            args[0]
+        );
         std::process::exit(2);
     }
     let spool = PathBuf::from(&args[1]);
     let mut poll_interval_ms: u64 = 1000;
+    let mut once = false;
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--poll-interval-ms" && i + 1 < args.len() {
             poll_interval_ms = args[i + 1].parse().unwrap_or(1000);
             i += 2;
+        } else if args[i] == "--once" {
+            once = true;
+            i += 1;
         } else {
             i += 1;
         }
@@ -188,6 +195,10 @@ fn main() {
 
         for path in entries {
             process_one(&path, node, &mut channel, &sent_dir, &failed_dir);
+        }
+
+        if once {
+            return;
         }
 
         std::thread::sleep(Duration::from_millis(poll_interval_ms));
