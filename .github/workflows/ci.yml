@@ -68,3 +68,31 @@ jobs:
         run: |
           python scripts/smoke_qallow.py --limen /tmp/LIMEN \
             --qallow-cli /tmp/Qallow/target/debug/qallow
+
+  # Third real consumer pair: VEYN's in-process ductei_bridge ->
+  # ductei-qallow-relay (reused unmodified) -> `qallow ingest` -> LMDB.
+  # See ATRIUM harness-roadmap/02-spine-flow.md ("VEYN pair second").
+  e2e-smoke-veyn:
+    runs-on: ubuntu-latest
+    env:
+      VEYN_REV: 1913f41e4b867351ef12bad196cc7653a674c84d
+      QALLOW_REV: 0a546b307c21b81f93ee56f5013698357662eff9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: checkout VEYN at pinned rev
+        run: |
+          git clone https://github.com/xingxerx/VEYN.git /tmp/VEYN
+          git -C /tmp/VEYN checkout "$VEYN_REV"
+      - name: checkout and build Qallow at pinned rev
+        run: |
+          git clone https://github.com/xingxerx/Qallow.git /tmp/Qallow
+          git -C /tmp/Qallow checkout "$QALLOW_REV"
+          cargo build --manifest-path /tmp/Qallow/Cargo.toml -p qallow_cli
+      - name: run smoke scenarios
+        run: |
+          python scripts/smoke_veyn.py --veyn /tmp/VEYN \
+            --qallow-cli /tmp/Qallow/target/debug/qallow
