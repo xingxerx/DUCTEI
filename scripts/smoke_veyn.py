@@ -127,10 +127,15 @@ def main() -> int:
         return 2
 
     print(f"smoke-veyn: building ductei_bridge_smoke in {args.veyn} ...")
-    subprocess.run(
+    build = subprocess.run(
         ["cargo", "build", "-p", "veyn-core", "--example", "ductei_bridge_smoke"],
-        check=True, cwd=args.veyn, capture_output=True, text=True,
+        cwd=args.veyn, capture_output=True, text=True,
     )
+    if build.returncode != 0:
+        print(build.stdout)
+        print(build.stderr)
+        print(f"smoke-veyn: build failed with exit {build.returncode}")
+        return build.returncode
     exe = ".exe" if os.name == "nt" else ""
     smoke_bin = args.veyn / "target" / "debug" / "examples" / f"ductei_bridge_smoke{exe}"
     if not smoke_bin.exists():
