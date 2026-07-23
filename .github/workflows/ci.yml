@@ -87,8 +87,10 @@ jobs:
         run: |
           git clone https://github.com/xingxerx/VEYN.git /tmp/VEYN
           git -C /tmp/VEYN checkout "$VEYN_REV"
-      - name: install VEYN's system deps (BLE/dbus, per VEYN's own .cargo/config.toml)
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: install VEYN's system deps (BLE/dbus, ALSA, HID/udev)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev libasound2-dev libudev-dev pkg-config
       - name: checkout and build Qallow at pinned rev
         run: |
           git clone https://github.com/xingxerx/Qallow.git /tmp/Qallow
