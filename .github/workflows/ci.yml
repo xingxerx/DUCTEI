@@ -14,3 +14,27 @@ jobs:
           ./target/debug/emit /tmp/stream.bin
           gcc -I/tmp/Qallow/include -o conformance/verify conformance/verify.c /tmp/Qallow/src/mind/sync_wire.c
           ./conformance/verify /tmp/stream.bin
+
+  # End-to-end smoke: limend -> ductei-limen-relay, four scenarios
+  # (good job, restart replicability, malformed request, malformed cert)
+  # with the hard invariants asserted inline. See scripts/smoke_e2e.py.
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    env:
+      # Rev-pin discipline (ATRIUM AGENTS.md): bumping this pin is a
+      # deliberate, auditable commit, never an implicit float to main.
+      LIMEN_REV: fd3f505d01be871d3b547221f384666b1d013326
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: checkout LIMEN at pinned rev
+        run: |
+          git clone https://github.com/xingxerx/LIMEN.git /tmp/LIMEN
+          git -C /tmp/LIMEN checkout "$LIMEN_REV"
+      - name: install LIMEN (simulator path only, no QPU extras)
+        run: pip install /tmp/LIMEN
+      - name: run smoke scenarios
+        run: python scripts/smoke_e2e.py --limen /tmp/LIMEN
