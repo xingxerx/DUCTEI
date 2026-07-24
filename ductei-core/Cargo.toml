@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 [features]
-grpc = ["dep:tonic", "dep:prost", "dep:tokio", "dep:tonic-build", "dep:protoc-bin-vendored"]
-quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:tokio"]
+# GAP 4: network transport (TCP framing) is opt-in. With no feature enabled,
+# ductei-core has no network code at all -- callers get only the local
+# Channel/spool path, so "no network available" degrades by construction
+# rather than by runtime detection.
+net = []
+grpc = ["net", "dep:tonic", "dep:prost", "dep:tokio", "dep:tonic-build", "dep:protoc-bin-vendored"]
+quic = ["net", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:tokio"]
 pq = ["dep:pqcrypto-mlkem", "dep:pqcrypto-traits"]
 
 [dependencies]

@@ -11,6 +11,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 pub mod gate;
+#[cfg(feature = "net")]
 pub mod transport;
 #[cfg(feature = "grpc")]
 pub mod grpc;

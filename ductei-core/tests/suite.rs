@@ -1,7 +1,11 @@
 use ductei_core::gate::{CausalGate, Verdict};
-use ductei_core::transport::{serve_connection, TcpClient, Transport};
+#[cfg(feature = "net")]
+use ductei_core::transport::{serve_connection, DeliveryPath, TcpClient, Transport};
 use ductei_core::*;
-use std::net::TcpListener;
+#[cfg(feature = "net")]
+use std::io::{Read, Write};
+#[cfg(feature = "net")]
+use std::net::{TcpListener, TcpStream};
 
 fn node(n: u8) -> [u8; 16] { [n; 16] }
 fn tmp(name: &str) -> String { format!("{}/{}-{}", std::env::temp_dir().display(), std::process::id(), name) }
@@ -104,6 +108,7 @@ fn gate_replay_after_restart_consistent() {
 
 // ---- Build 1: transport (two-node loopback acceptance gate) ----
 
+#[cfg(feature = "net")]
 #[test]
 fn transport_two_node_loopback() {
     let p = tmp("t5.jsonl"); let r = tmp("t5r.jsonl");
@@ -128,8 +133,114 @@ fn transport_two_node_loopback() {
     assert_eq!(envs.len(), 2);
 }
 
+// ---- GAP 4: network transport, feature-gated, local-first ----
+
+#[cfg(feature = "net")]
+#[test]
+fn transport_malformed_frame_rejected_without_corrupting_log() {
+    let p = tmp("t5m.jsonl");
+    let r = tmp("t5mr.jsonl");
+    let _ = std::fs::remove_file(&p);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut ch = Channel::open(ScopePolicy::new().allow("qallow.semantic.cert"), &p, &r).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        // A malformed frame ends the connection (serve_connection returns
+        // Err) but must never panic and must never touch the log for the
+        // bad frame -- only whatever was already validly accepted before it.
+        let _ = serve_connection(stream, &mut ch);
+        let (envs, _) = ch.replay(0).unwrap();
+        envs
+    });
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let good = env("a", &["qallow.semantic.cert"], 1, 1);
+    let body = serde_json::to_vec(&good).unwrap();
+    stream.write_all(&(body.len() as u32).to_le_bytes()).unwrap();
+    stream.write_all(&body).unwrap();
+    let mut ack = [0u8; 1];
+    stream.read_exact(&mut ack).unwrap();
+    assert_eq!(ack[0], 1);
+
+    // Length prefix claims 5 bytes of body but they are not valid JSON.
+    let garbage = [0u8, 1, 2, 3, 4];
+    stream.write_all(&(garbage.len() as u32).to_le_bytes()).unwrap();
+    stream.write_all(&garbage).unwrap();
+    drop(stream);
+
+    let envs = server.join().unwrap();
+    assert_eq!(envs.len(), 1);
+    assert_eq!(envs[0].key, "a");
+}
+
+#[cfg(feature = "net")]
+#[test]
+fn transport_restart_replay_over_network() {
+    let p = tmp("t5s.jsonl");
+    let r = tmp("t5sr.jsonl");
+    let _ = std::fs::remove_file(&p);
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (pp, rp) = (p.clone(), r.clone());
+        let server = std::thread::spawn(move || {
+            let mut ch = Channel::open(ScopePolicy::new().allow("qallow.semantic.cert"), &pp, &rp).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            serve_connection(stream, &mut ch).unwrap();
+        });
+        let mut c = TcpClient::connect(addr).unwrap();
+        assert!(c.send_envelope(&env("a", &["qallow.semantic.cert"], 1, 1)).unwrap());
+        drop(c);
+        server.join().unwrap();
+    }
+    // Simulate a restart: fresh Channel + fresh listener over the same
+    // persisted log path. The gate/log must rebuild from what was already
+    // accepted, exactly like the local restart_survival test.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut ch = Channel::open(ScopePolicy::new().allow("qallow.semantic.cert"), &p, &r).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        serve_connection(stream, &mut ch).unwrap();
+        let (envs, _) = ch.replay(0).unwrap();
+        envs
+    });
+    let mut c = TcpClient::connect(addr).unwrap();
+    assert!(c.send_envelope(&env("b", &["qallow.semantic.cert"], 1, 2)).unwrap());
+    drop(c);
+    let envs = server.join().unwrap();
+    assert_eq!(envs.len(), 2);
+    assert_eq!(envs[0].key, "a");
+    assert_eq!(envs[1].key, "b");
+}
+
+#[cfg(feature = "net")]
+#[test]
+fn transport_degrades_to_local_when_network_unavailable() {
+    let p = tmp("t5d.jsonl");
+    let r = tmp("t5dr.jsonl");
+    let _ = std::fs::remove_file(&p);
+    let mut local = Channel::open(ScopePolicy::new().allow("qallow.semantic.cert"), &p, &r).unwrap();
+
+    // Bind then immediately drop to get a port nothing is listening on --
+    // the network path must fail to connect, and the send must not be lost.
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    drop(l);
+
+    let e = env("a", &["qallow.semantic.cert"], 1, 1);
+    let path = ductei_core::transport::send_local_first(addr, &e, &mut local).unwrap();
+    assert_eq!(path, DeliveryPath::LocalFallback);
+
+    let (envs, _) = local.replay(0).unwrap();
+    assert_eq!(envs.len(), 1);
+    assert_eq!(envs[0].key, "a");
+}
+
 // ---- Build 2: VEYN adapter end-to-end (synthetic OSC/EEG sample) ----
 
+#[cfg(feature = "net")]
 #[test]
 fn veyn_event_flows_gate_transport_qallow() {
     let p = tmp("t6.jsonl"); let r = tmp("t6r.jsonl");

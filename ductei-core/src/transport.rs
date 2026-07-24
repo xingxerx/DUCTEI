@@ -69,3 +69,45 @@ pub fn listen_once(addr: impl ToSocketAddrs, ch: &mut Channel) -> std::io::Resul
     let _ = ch; // channel is used by the caller when accepting
     Ok((a, l))
 }
+
+/// Where an envelope ended up: sent over the wire and acked by a remote
+/// peer, or, because no peer was reachable, appended directly to the local
+/// channel instead.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeliveryPath {
+    Network,
+    LocalFallback,
+}
+
+/// Local-first delivery (GAP 4): try the network path first; if the peer
+/// is unreachable (connection refused, no route, DNS failure, timeout),
+/// the envelope is not dropped -- it goes through the same
+/// persistence-before-ack `Channel` used when there is no network at all.
+/// A remote peer that is reachable but rejects the envelope (scope denial
+/// or a stale causal delta) is a real, informative "no" and does NOT fall
+/// back to local delivery -- only *unreachability* degrades.
+pub fn send_local_first(
+    addr: impl ToSocketAddrs,
+    env: &Envelope,
+    local: &mut Channel,
+) -> Result<DeliveryPath, ChannelError> {
+    match TcpClient::connect(addr) {
+        Ok(mut client) => match client.send_envelope(env) {
+            Ok(accepted) => {
+                if accepted {
+                    Ok(DeliveryPath::Network)
+                } else {
+                    Err(ChannelError::ScopeDenied(env.key.clone()))
+                }
+            }
+            Err(_) => {
+                local.send(env.clone())?;
+                Ok(DeliveryPath::LocalFallback)
+            }
+        },
+        Err(_) => {
+            local.send(env.clone())?;
+            Ok(DeliveryPath::LocalFallback)
+        }
+    }
+}
